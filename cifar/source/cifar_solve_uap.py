@@ -107,10 +107,10 @@ class uap_solver:
         x_batch, y_batch = load_dataset_class(cur_class=self.source_class)
 
         start_time = time.time()
-        #self.uap_causality_analysis(x_batch)
-        #neu_idx = self.uap_find_neuron()
+        self.uap_causality_analysis(x_batch)
+        neu_idx = self.uap_find_neuron()
 
-        #uap_trig = self.uap_gen_trig(x_batch, neu_idx)
+        uap_trig = self.uap_gen_trig(x_batch, neu_idx)
 
         #test
         sr = self.uap_test(x_batch)
@@ -298,7 +298,7 @@ class uap_solver:
             grads_value = np.mean(grads_value, axis=0)
             trig_mask += grads_value * opt_mask
             input_img_data = input_img_data + grads_value
-            print(loss_value / BATCH_SIZE)
+            #print(loss_value / BATCH_SIZE)
 
         predict = self.model.predict(input_img_data)
         predict = np.argmax(predict, axis=1)

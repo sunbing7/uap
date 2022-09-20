@@ -32,7 +32,7 @@ DATA_FILE = 'cifar_dataset.h5'  # dataset file
 MODEL_DIR = '../models'  # model directory
 MODEL_FILENAME = 'cifar.h5'  # model file
 
-RESULT_DIR = '../results_uap'  # directory for storing results
+RESULT_DIR = '../results'  # directory for storing results
 # pregenerated UAP
 UAP_TRIGGER = 'universal_cifar.npy'
 
