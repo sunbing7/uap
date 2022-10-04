@@ -113,9 +113,9 @@ class uap_solver:
         start_time = time.time()
         #self.uap_causality_analysis_layer(x_batch, 6)
         neu_idx = self.uap_find_neuron_hidden(6)
-
         uap_trig = self.uap_gen_trig_hidden(x_batch, 6, neu_idx)
-
+        #uap_trig = self.uap_gen_trig_hidden_step1(x_batch, 6, neu_idx)
+        #uap_trig = self.uap_gen_trig_hidden_step2(x_batch, 6, neu_idx)
         #test
         sr = self.uap_test(x_batch)
         print('success rate:{}'.format(sr))
@@ -361,9 +361,9 @@ class uap_solver:
         # this function returns the loss and grads given the input picture
         iterate = K.function([input_img], [loss, grads])
         neu_idx = np.array(neu_idx).astype(int)
-        opt_mask = np.ones(shape=(IMG_ROWS, IMG_COLS, IMG_COLOR))
+        opt_mask = np.zeros(shape=(IMG_ROWS, IMG_COLS, IMG_COLOR))
         opt_mask = opt_mask.reshape(IMG_ROWS * IMG_COLS * IMG_COLOR)
-        opt_mask[neu_idx] = 0
+        opt_mask[neu_idx] = 1
         opt_mask = opt_mask.reshape((IMG_ROWS, IMG_COLS, IMG_COLOR))
         # run gradient ascent for self.steps steps
         input_img_data = x_batch[:BATCH_SIZE]
@@ -373,7 +373,7 @@ class uap_solver:
             loss_value, grads_value = iterate([input_img_data])
             grads_value = np.mean(grads_value, axis=0)
             trig_mask += grads_value * opt_mask
-            input_img_data = input_img_data + grads_value
+            input_img_data = input_img_data + grads_value * opt_mask
             #print(loss_value / BATCH_SIZE)
 
         predict = self.model.predict(input_img_data)
@@ -412,6 +412,7 @@ class uap_solver:
         '''
         generate trigger using cmv's method
         optimize hidden neuron neu_idx to maximize the output target
+        find best value of hidden neurons specified in neu_idx
         '''
         #split the model first
         model_copy = keras.models.clone_model(self.model)
@@ -420,47 +421,59 @@ class uap_solver:
         # split to current layer
         partial_model1, partial_model2 = self.split_keras_model(model_copy, layer + 1)
 
-        partial_model1.get_input_shape_at(0)
+        model1_ip_shape = partial_model1.get_input_shape_at(0)[1:] # (?,32,32,3)
+        model2_ip_shape = partial_model2.get_input_shape_at(0)[1:]  # (?,8,8,64)
 
-        output_index = np.array(neu_idx).astype(int)
-        reg = 0.8
 
-        # compute the gradient of the input picture wrt this loss
-        input_img = keras.layers.Input(shape=INPUT_SHAPE)
+        output_index_ = np.array(neu_idx).astype(int)
+        output_index = self.target_class
+        reg = 0.0
 
         model1 = keras.models.clone_model(partial_model1)
         model1.set_weights(partial_model1.get_weights())
 
         model2 = keras.models.clone_model(partial_model2)
         model2.set_weights(partial_model2.get_weights())
-        #loss = K.mean(model1(input_img)[:, output_index]) - reg * K.mean(K.square(input_img))
-        out = model1(input_img)
-        out = tf.reshape(out, [-1, np.prod((model1(input_img).get_shape().as_list())[1:])])
-        out = tf.gather(out, output_index, axis=1)
-        loss = K.mean(out) - reg * K.mean(K.square(input_img))
-        grads = K.gradients(loss, input_img)[0]
+
+        # iterate
+        # compute the gradient of the input picture wrt this loss
+        input_img = keras.layers.Input(shape=model1_ip_shape)
+        model_2_input = keras.layers.Input(shape=model2_ip_shape)
+        out = model2(model_2_input)[:, output_index]
+        #out = tf.reshape(out, [-1, np.prod((model1(input_img).get_shape().as_list())[1:])])
+        #out = tf.gather(out, output_index, axis=1)
+        loss = K.mean(out) - reg * K.mean(K.square(model_2_input))
+        grads = K.gradients(loss, model_2_input)[0]
         # normalization trick: we normalize the gradient
         # grads /= (K.sqrt(K.mean(K.square(grads))) + 1e-5)
 
         # this function returns the loss and grads given the input picture
-        iterate = K.function([input_img], [loss, grads])
-        #neu_idx = np.array(neu_idx).astype(int)
-        #opt_mask = np.ones(shape=(IMG_ROWS, IMG_COLS, IMG_COLOR))
-        #opt_mask = opt_mask.reshape(IMG_ROWS * IMG_COLS * IMG_COLOR)
-        #opt_mask[neu_idx] = 0
-        #opt_mask = opt_mask.reshape((IMG_ROWS, IMG_COLS, IMG_COLOR))
+        iterate = K.function([model_2_input], [loss, grads])
+
+        neu_idx = np.array(neu_idx).astype(int)
+        opt_mask = np.zeros(shape=model2_ip_shape)
+        opt_mask = opt_mask.reshape(-1)
+        opt_mask[neu_idx] = 1
+        opt_mask = opt_mask.reshape(model2_ip_shape)
+
+        opt_mask_inv = np.ones(shape=model2_ip_shape)
+        opt_mask_inv = opt_mask_inv.reshape(-1)
+        opt_mask_inv[neu_idx] = 0
+        opt_mask_inv = opt_mask_inv.reshape(model2_ip_shape)
         # run gradient ascent for self.steps steps
-        input_img_data = x_batch[:BATCH_SIZE]
-        trig_mask = np.zeros(shape=(IMG_ROWS, IMG_COLS, IMG_COLOR))
+        model2_input_data = model1.predict(x_batch[:BATCH_SIZE])#[0].reshape((1,8,8,64))
+        model2_input_data = model2_input_data * opt_mask_inv
+        #test = model2.predict(model2_input_data)
+        trig_mask = np.zeros(shape=model2_ip_shape)
         for batch in range (0, self.steps):
-            loss_value, grads_value = iterate([input_img_data])
+            loss_value, grads_value = iterate([model2_input_data])
             grads_value = np.mean(grads_value, axis=0)
-            #trig_mask += grads_value * opt_mask
-            trig_mask += grads_value
-            input_img_data = input_img_data + grads_value
+            trig_mask += grads_value * opt_mask
+            #trig_mask += grads_value
+            model2_input_data = model2_input_data + grads_value * opt_mask
             print(loss_value / BATCH_SIZE)
 
-        predict = self.model.predict(input_img_data)
+        predict = model2.predict(model2_input_data)
         predict = np.argmax(predict, axis=1)
         print("prediction: {}".format(predict))
 
@@ -489,7 +502,112 @@ class uap_solver:
         print("prediction: {}".format(predict))
         '''
         del model1
-        np.save(RESULT_DIR + "uap_trig_hidden.npy", trig_mask)
+        del model2
+        np.save(RESULT_DIR + "uap_trig_hidden_step1.npy", trig_mask)
+        return
+
+    def uap_gen_trig_hidden_step2(self, x_batch, layer, neu_idx):
+        '''
+        generate trigger using cmv's method
+        optimize hidden neuron neu_idx to maximize the output target
+        find best value of input neurons maximize hidden
+        '''
+        #split the model first
+        model_copy = keras.models.clone_model(self.model)
+        model_copy.set_weights(self.model.get_weights())
+
+        # split to current layer
+        partial_model1, partial_model2 = self.split_keras_model(model_copy, layer + 1)
+
+        model1_ip_shape = partial_model1.get_input_shape_at(0)[1:] # (32,32,3)
+        model2_ip_shape = partial_model2.get_input_shape_at(0)[1:]  # (8,8,64)
+
+        neu_idx = np.array(neu_idx).astype(int)
+        output_index = self.target_class
+        reg = 0.0
+
+        # load best hidden
+        best_hidden = np.load(RESULT_DIR + "uap_trig_hidden_step1.npy")
+        hidden_mask = np.zeros(shape=model2_ip_shape)
+        hidden_mask = hidden_mask.reshape(-1)
+        hidden_mask[neu_idx] = 1
+        hidden_mask = hidden_mask.reshape(model2_ip_shape)
+
+        hidden_mask_inv = np.ones(shape=model2_ip_shape)
+        hidden_mask_inv = hidden_mask_inv.reshape(-1)
+        hidden_mask_inv[neu_idx] = 0
+        hidden_mask_inv = hidden_mask_inv.reshape(model2_ip_shape)
+        best_hidden = best_hidden * hidden_mask
+
+        model1 = keras.models.clone_model(partial_model1)
+        model1.set_weights(partial_model1.get_weights())
+
+        model2 = keras.models.clone_model(partial_model2)
+        model2.set_weights(partial_model2.get_weights())
+
+        # iterate
+        # compute the gradient of the input picture wrt this loss
+        input_img = keras.layers.Input(shape=model1_ip_shape)
+
+        out = model1(input_img)
+        #out = tf.reshape(out, [-1, np.prod((model1(input_img).get_shape().as_list())[1:])])
+        #out = tf.gather(out, output_index, axis=1)
+        loss = - K.mean(K.abs(out * hidden_mask_inv - best_hidden)) - reg * K.mean(K.square(input_img))
+        grads = K.gradients(loss, input_img)[0]
+        # normalization trick: we normalize the gradient
+        # grads /= (K.sqrt(K.mean(K.square(grads))) + 1e-5)
+
+        # this function returns the loss and grads given the input picture
+        iterate = K.function([input_img], [loss, grads])
+
+        # run gradient ascent for self.steps steps
+        input_data = x_batch[:BATCH_SIZE]
+
+        #test
+        test = model1.predict(input_data)
+        loss_test = test * hidden_mask
+        loss_test = np.abs(loss_test - best_hidden)
+        loss_test = np.mean(loss_test)
+
+        trig_mask = np.zeros(shape=model1_ip_shape)
+        for batch in range (0, self.steps):
+            loss_value, grads_value = iterate([input_data])
+            grads_value = np.mean(grads_value, axis=0)
+            trig_mask += grads_value
+            input_data = input_data + grads_value
+            print(loss_value / BATCH_SIZE)
+
+        predict = self.model.predict(input_data)
+        predict = np.argmax(predict, axis=1)
+        print("prediction: {}".format(predict))
+
+        # print(loss_value)
+        '''
+        img = input_img_data[0].copy()
+        img = self.deprocess_image(img)
+
+        utils_backdoor.dump_image(self.deprocess_image(ori_img),
+                                  RESULT_DIR + 'cmv_ori_' + str(base_class) + '_' + str(target_class) + '_' + str(idx) + ".png",
+                                  'png')
+
+        utils_backdoor.dump_image(img,
+                                  RESULT_DIR + 'cmv' + str(base_class) + '_' + str(target_class) + '_' + str(idx) + ".png",
+                                  'png')
+        del img
+        del ori_img
+
+        np.savetxt(RESULT_DIR + "cmv"+ str(base_class) + '_' + str(target_class) + '_' + str(idx) + ".txt", input_img_data[0].reshape(28*28*1), fmt="%s")
+
+        img = np.loadtxt(RESULT_DIR + "cmv" + str(idx) + ".txt")
+        img = img.reshape(((28,28,1)))
+
+        predict = self.model.predict(img.reshape(1,28,28,1))
+        predict = np.argmax(predict, axis=1)
+        print("prediction: {}".format(predict))
+        '''
+        del model1
+        del model2
+        np.save(RESULT_DIR + "uap_trig_hidden_step2.npy", trig_mask)
         return
 
     def uap_gen_trig_hidden(self, x_batch, layer, neu_idx):
@@ -507,7 +625,7 @@ class uap_solver:
         partial_model1.get_input_shape_at(0)
 
         output_index = np.array(neu_idx).astype(int)
-        reg = 0.8
+        reg = 0.5
 
         # compute the gradient of the input picture wrt this loss
         input_img = keras.layers.Input(shape=INPUT_SHAPE)
